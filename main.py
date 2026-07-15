@@ -78,6 +78,7 @@ async def start(message: types.Message):
 @dp.message(F.photo)
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
+    await message.answer("Я вижу твоё фото! ✅")
     logging.info(f"DEBUG PHOTO: Получено сообщение от {message.from_user.full_name}")
     logging.info(f"DEBUG PHOTO: Есть фото: {bool(message.photo)}")
     logging.info(f"DEBUG PHOTO: Caption raw: '{message.caption}'")
