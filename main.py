@@ -78,8 +78,7 @@ async def start(message: types.Message):
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     caption = (message.caption or "").lower()
-    if not any(word in caption for word in ["уборка", "clean", "убра"]):
-        await message.answer("Добавь в подпись слово 'уборка' или 'clean'")
+    if not any(word in caption for word in ["уборка", "clean", "убр", "убрался", "убираю, убрался сучки"]):
         return
 
     file_id = message.photo[-1].file_id
