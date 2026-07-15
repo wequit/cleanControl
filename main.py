@@ -25,13 +25,14 @@ async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS cleanings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                username TEXT,
-                date TEXT,
-                photo_file_id TEXT,
-                votes TEXT DEFAULT '{}'
-            )
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    date TEXT,
+    photo_file_id TEXT,
+    votes TEXT DEFAULT '{}',
+    closed INTEGER DEFAULT 0
+)
         """)
         await db.commit()
 
@@ -67,15 +68,41 @@ def build_vote_card(cleaning_id: int, author_name: str, votes: dict) -> tuple[st
 async def start(message: types.Message):
     await message.answer(
         "Привет! 👋\n"
-        "Отправь фото уборки с текстом 'уборка', 'clean' или 'убра' в подписи.\n"
-        "Дальше все (кроме автора) голосуют, сколько баллов дать: 1 / 5 / 10 / ❌.\n\n"
-        "/pending — последние уборки, можно проголосовать или переголосовать\n"
+        "Отправь фото уборки с текстом 'убрался', 'clean' или 'убр' в подписи.\n"
+        "Дальше все (кроме автора) голосуют, сколько баллов дать.\n\n"
+        "/info — подробная информация\n"
         "/stats — статистика\n"
+        "/pending — последние уборки, можно проголосовать или переголосовать\n"
         "/leaderboard — топ"
     )
 
 
-@dp.message(F.photo)
+@dp.message(Command("info"))
+async def info(message: types.Message):
+    await message.answer(
+        "📋 **Информация о боте**\n\n"
+        "🧹 **Как заявить уборку:**\n"
+        "Отправь фото с подписью, содержащей слова: 'уборка', 'clean', 'убр', 'убрался', 'убираю' или 'убра'\n\n"
+        "🗳 **Как голосовать:**\n"
+        "После отправки фото появится карточка с кнопками:\n"
+        "1️⃣ — мелкая уборка\n"
+        "5️⃣ — обычная уборка\n"
+        "🔟 — генеральная уборка\n"
+        "❌ — не засчитывать\n\n"
+        "⚠️ **Правила:**\n"
+        "- Нельзя голосовать за свою уборку\n"
+        "- Можно переголосовать (оценка изменится)\n"
+        "- Уборка закрывается после 2+ голосов\n\n"
+        "📊 **Команды:**\n"
+        "/start — приветствие и базовая справка\n"
+        "/info — эта информация\n"
+        "/pending — последние уборки для голосования\n"
+        "/stats — рейтинг всех участников\n"
+        "/leaderboard — топ уборщиков\n\n"
+        "💡 **Совет:** Используй /pending чтобы проголосовать за пропущенные уборки!"
+    )
+
+
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     await message.answer("Я вижу твоё фото! ✅")
@@ -116,40 +143,103 @@ async def handle_photo(message: types.Message):
     logging.info("DEBUG PHOTO: Сообщение с клавиатурой отправлено")
 
 @dp.callback_query(F.data.startswith("vote_"))
+@dp.callback_query(F.data.startswith("vote_"))
 async def vote_handler(callback: types.CallbackQuery):
     _, cleaning_id_str, points_str = callback.data.split("_")
+
     cleaning_id = int(cleaning_id_str)
     points = int(points_str)
 
     async with aiosqlite.connect(DB_NAME) as db:
+
         async with db.execute(
-            "SELECT user_id, username, votes FROM cleanings WHERE id = ?", (cleaning_id,)
+            """
+            SELECT user_id, username, votes
+            FROM cleanings
+            WHERE id = ?
+            """,
+            (cleaning_id,)
         ) as cursor:
             row = await cursor.fetchone()
 
+
         if row is None:
-            await callback.answer("Эта уборка не найдена.", show_alert=True)
+            await callback.answer(
+                "Уборка не найдена",
+                show_alert=True
+            )
             return
+
 
         author_id, author_name, votes_json = row
 
+
         if callback.from_user.id == author_id:
-            await callback.answer("Нельзя голосовать за свою же уборку 🙅", show_alert=True)
+            await callback.answer(
+                "Нельзя голосовать за свою уборку 🙅",
+                show_alert=True
+            )
             return
 
+
         votes = json.loads(votes_json or "{}")
+
+
+        # если голосовал раньше — просто меняем оценку
         votes[str(callback.from_user.id)] = points
+
+
+        # минимум 2 человека проголосовали
+        closed = 1 if len(votes) >= 2 else 0
+
+
         await db.execute(
-            "UPDATE cleanings SET votes = ? WHERE id = ?", (json.dumps(votes), cleaning_id)
+            """
+            UPDATE cleanings
+            SET votes = ?, closed = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(votes),
+                closed,
+                cleaning_id
+            )
         )
+
         await db.commit()
 
-    text, keyboard = build_vote_card(cleaning_id, author_name, votes)
+
+
+    text, keyboard = build_vote_card(
+        cleaning_id,
+        author_name,
+        votes
+    )
+
+
+    if closed:
+        avg = sum(votes.values()) / len(votes)
+
+        text += (
+            "\n\n"
+            "✅ Уборка закрыта\n"
+            f"Итоговая оценка: {avg:.1f}/10"
+        )
+
+
     try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+
     except Exception:
-        # если сообщение было с фото (открыто через /pending), текст лежит в caption
-        await callback.message.edit_caption(caption=text, reply_markup=keyboard)
+        await callback.message.edit_caption(
+            caption=text,
+            reply_markup=keyboard
+        )
+
+
     await callback.answer("Голос учтён ✅")
 
 
@@ -230,6 +320,7 @@ async def main():
     await init_db()
     await bot.set_my_commands([
         BotCommand(command="start", description="Как пользоваться ботом"),
+        BotCommand(command="info", description="Подробная информация"),
         BotCommand(command="pending", description="Последние уборки / голосование"),
         BotCommand(command="stats", description="Рейтинг уборок"),
         BotCommand(command="leaderboard", description="Топ уборщиков"),
