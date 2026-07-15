@@ -76,33 +76,29 @@ async def start(message: types.Message):
 
 
 @dp.message(F.photo)
+@dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    caption = (message.caption or "").lower()
-    print(f"DEBUG: Получено фото. Caption: '{caption}'")  # ← отладка
+    logging.info(f"DEBUG PHOTO: Получено сообщение от {message.from_user.full_name}")
+    logging.info(f"DEBUG PHOTO: Есть фото: {bool(message.photo)}")
+    logging.info(f"DEBUG PHOTO: Caption raw: '{message.caption}'")
     
-    if not any(word in caption for word in ["уборка", "clean", "убр", "убрался", "убираю", "убра"]):
-        print("DEBUG: Ключевое слово не найдено")
+    if not message.photo:
+        logging.info("DEBUG PHOTO: Нет фото")
         return
-
-    print("DEBUG: Ключевое слово найдено — сохраняем уборку") 
-
-    file_id = message.photo[-1].file_id
-    author_name = message.from_user.username or message.from_user.full_name
-
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute(
-            "INSERT INTO cleanings (user_id, username, date, photo_file_id, votes) VALUES (?, ?, ?, ?, ?)",
-            (message.from_user.id, author_name, datetime.now().isoformat(), file_id, "{}"),
-        )
-        await db.commit()
-        cleaning_id = cursor.lastrowid
-
-    text, keyboard = build_vote_card(cleaning_id, author_name, {})
-    await message.answer(text, reply_markup=keyboard)
+    
     caption = (message.caption or "").lower()
-    if not any(word in caption for word in ["уборка", "clean", "убр", "убрался", "убираю, убрался сучки"]):
+    logging.info(f"DEBUG PHOTO: Caption lower: '{caption}'")
+    
+    keywords = ["уборка", "clean", "убр", "убрался", "убираю", "убра"]
+    found = any(word in caption for word in keywords)
+    logging.info(f"DEBUG PHOTO: Ключевое слово найдено: {found}")
+    
+    if not found:
+        logging.info("DEBUG PHOTO: Не найдено ключевое слово — выход")
         return
 
+    logging.info("DEBUG PHOTO: ✅ Всё ок, сохраняем уборку!")
+    
     file_id = message.photo[-1].file_id
     author_name = message.from_user.username or message.from_user.full_name
 
@@ -116,7 +112,7 @@ async def handle_photo(message: types.Message):
 
     text, keyboard = build_vote_card(cleaning_id, author_name, {})
     await message.answer(text, reply_markup=keyboard)
-
+    logging.info("DEBUG PHOTO: Сообщение с клавиатурой отправлено")
 
 @dp.callback_query(F.data.startswith("vote_"))
 async def vote_handler(callback: types.CallbackQuery):
