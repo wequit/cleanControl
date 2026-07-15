@@ -37,6 +37,15 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 
+async def is_admin(user_id: int, chat_id: int) -> bool:
+    """Проверяет, является ли пользователь админом в группе."""
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
+
+
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -53,7 +62,7 @@ async def init_db():
         await db.commit()
 
 
-def build_vote_card(cleaning_id: int, author_name: str, votes: dict) -> tuple[str, InlineKeyboardMarkup]:
+def build_vote_card(cleaning_id: int, author_name: str, votes: dict, closed: bool = False) -> tuple[str, InlineKeyboardMarkup]:
     """Строит текст карточки и клавиатуру голосования для конкретной уборки."""
     if votes:
         values = list(votes.values())
@@ -63,20 +72,27 @@ def build_vote_card(cleaning_id: int, author_name: str, votes: dict) -> tuple[st
         tally = "\n\n🗳 Пока никто не проголосовал."
 
     text = (
-        f"📸 {author_name} заявляет уборку!\n"
-        f"Сколько баллов дать?\n"
+        f"📸 {author_name} пиздит что убрался!\n"
+        f"Че сколько баллов дадим?\n"
         f"1 — мелкая уборка, 5 — обычная, 10 — генеральная."
         f"{tally}"
     )
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1️⃣", callback_data=f"vote_{cleaning_id}_1"),
-            InlineKeyboardButton(text="5️⃣", callback_data=f"vote_{cleaning_id}_5"),
-            InlineKeyboardButton(text="🔟", callback_data=f"vote_{cleaning_id}_10"),
-            InlineKeyboardButton(text="❌", callback_data=f"vote_{cleaning_id}_0"),
-        ]
-    ])
+    if closed:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔙 Отменить баллы (админ)", callback_data=f"admin_remove_{cleaning_id}"),
+            ]
+        ])
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1️⃣", callback_data=f"vote_{cleaning_id}_1"),
+                InlineKeyboardButton(text="5️⃣", callback_data=f"vote_{cleaning_id}_5"),
+                InlineKeyboardButton(text="🔟", callback_data=f"vote_{cleaning_id}_10"),
+                InlineKeyboardButton(text="❌", callback_data=f"vote_{cleaning_id}_0"),
+            ]
+        ])
     return text, keyboard
 
 
@@ -176,7 +192,7 @@ async def handle_photo(message: types.Message):
         await db.commit()
         cleaning_id = cursor.lastrowid
 
-    text, keyboard = build_vote_card(cleaning_id, author_name, {})
+    text, keyboard = build_vote_card(cleaning_id, author_name, {}, False)
     await message.answer(text, reply_markup=keyboard)
     logging.info("DEBUG PHOTO: Сообщение с клавиатурой отправлено")
 
@@ -210,14 +226,6 @@ async def vote_handler(callback: types.CallbackQuery):
 
 
         author_id, author_name, votes_json, closed = row
-
-
-        if closed:
-            await callback.answer(
-                "Уборка уже закрыта, голосовать нельзя 🚫",
-                show_alert=True
-            )
-            return
 
 
         if callback.from_user.id == author_id:
@@ -259,7 +267,8 @@ async def vote_handler(callback: types.CallbackQuery):
     text, keyboard = build_vote_card(
         cleaning_id,
         author_name,
-        votes
+        votes,
+        closed
     )
 
 
@@ -319,7 +328,7 @@ async def show_handler(callback: types.CallbackQuery):
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
-            "SELECT username, votes, photo_file_id FROM cleanings WHERE id = ?", (cleaning_id,)
+            "SELECT username, votes, photo_file_id, closed FROM cleanings WHERE id = ?", (cleaning_id,)
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -327,11 +336,65 @@ async def show_handler(callback: types.CallbackQuery):
         await callback.answer("Не найдено.", show_alert=True)
         return
 
-    username, votes_json, photo_file_id = row
+    username, votes_json, photo_file_id, closed = row
     votes = json.loads(votes_json or "{}")
-    text, keyboard = build_vote_card(cleaning_id, username, votes)
+    text, keyboard = build_vote_card(cleaning_id, username, votes, False)
     await callback.message.answer_photo(photo_file_id, caption=text, reply_markup=keyboard)
     await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_remove_"))
+async def admin_remove_handler(callback: types.CallbackQuery):
+    cleaning_id = int(callback.data.split("_")[2])
+    chat_id = callback.message.chat.id
+
+    # Проверка на админа
+    if not await is_admin(callback.from_user.id, chat_id):
+        await callback.answer(
+            "Только админы могут отменять баллы 🚫",
+            show_alert=True
+        )
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT username, votes FROM cleanings WHERE id = ?", (cleaning_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if row is None:
+        await callback.answer("Уборка не найдена", show_alert=True)
+        return
+
+    username, votes_json = row
+    votes = json.loads(votes_json or "{}")
+
+    if not votes:
+        await callback.answer("Нет голосов для отмены", show_alert=True)
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE cleanings SET votes = '{}', closed = 0 WHERE id = ?",
+            (cleaning_id,)
+        )
+        await db.commit()
+
+    text, keyboard = build_vote_card(cleaning_id, username, {}, False)
+    text += "\n\n🔙 Баллы отменены админом"
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except Exception:
+        await callback.message.edit_caption(
+            caption=text,
+            reply_markup=keyboard
+        )
+
+    await callback.answer("Баллы отменены ✅")
 
 
 @dp.message(Command("stats"))
@@ -356,7 +419,7 @@ async def stats(message: types.Message):
         await message.answer("Пока никто не убирался 😢")
         return
 
-    text = "🏆 Рейтинг уборок:\n\n"
+    text = "🏆 Рейтинг дрочеров:\n\n"
     for i, entry in enumerate(ranking, 1):
         text += f"{i}. {entry['username']} — {entry['points']:.1f} баллов\n"
     await message.answer(text)
