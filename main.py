@@ -78,6 +78,28 @@ async def start(message: types.Message):
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     caption = (message.caption or "").lower()
+    print(f"DEBUG: Получено фото. Caption: '{caption}'")  # ← отладка
+    
+    if not any(word in caption for word in ["уборка", "clean", "убр", "убрался", "убираю", "убра"]):
+        print("DEBUG: Ключевое слово не найдено")
+        return
+
+    print("DEBUG: Ключевое слово найдено — сохраняем уборку") 
+
+    file_id = message.photo[-1].file_id
+    author_name = message.from_user.username or message.from_user.full_name
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "INSERT INTO cleanings (user_id, username, date, photo_file_id, votes) VALUES (?, ?, ?, ?, ?)",
+            (message.from_user.id, author_name, datetime.now().isoformat(), file_id, "{}"),
+        )
+        await db.commit()
+        cleaning_id = cursor.lastrowid
+
+    text, keyboard = build_vote_card(cleaning_id, author_name, {})
+    await message.answer(text, reply_markup=keyboard)
+    caption = (message.caption or "").lower()
     if not any(word in caption for word in ["уборка", "clean", "убр", "убрался", "убираю, убрался сучки"]):
         return
 
