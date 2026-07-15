@@ -9,6 +9,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     BotCommand,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 import aiosqlite
 from dotenv import load_dotenv
@@ -19,6 +21,20 @@ bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()
 
 DB_NAME = "cleaning.db"
+
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text="📸 Уборка"),
+            KeyboardButton(text="🏆 Рейтинг"),
+        ],
+        [
+            KeyboardButton(text="📋 История"),
+            KeyboardButton(text="📜 Правила"),
+        ],
+    ],
+    resize_keyboard=True,
+)
 
 
 async def init_db():
@@ -70,10 +86,11 @@ async def start(message: types.Message):
         "Привет! 👋\n"
         "Отправь фото уборки с текстом 'убрался', 'clean' или 'убр' в подписи.\n"
         "Дальше все (кроме автора) голосуют, сколько баллов дать.\n\n"
-        "/info — подробная информация\n"
         "/stats — статистика\n"
         "/pending — последние уборки, можно проголосовать или переголосовать\n"
         "/leaderboard — топ"
+        "/info — подробная информация\n",
+        reply_markup=main_keyboard
     )
 
 
@@ -103,9 +120,30 @@ async def info(message: types.Message):
     )
 
 
+@dp.message(F.text == "📸 Уборка")
+async def btn_cleaning(message: types.Message):
+    await message.answer(
+        "📸 Отправь фото уборки с подписью, содержащей слова: 'уборка', 'clean', 'убр', 'убрался', 'убираю' или 'убра'"
+    )
+
+
+@dp.message(F.text == "🏆 Рейтинг")
+async def btn_rating(message: types.Message):
+    await stats(message)
+
+
+@dp.message(F.text == "📋 История")
+async def btn_history(message: types.Message):
+    await pending(message)
+
+
+@dp.message(F.text == "📜 Правила")
+async def btn_rules(message: types.Message):
+    await info(message)
+
+
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    await message.answer("Я вижу твоё фото! ✅")
     logging.info(f"DEBUG PHOTO: Получено сообщение от {message.from_user.full_name}")
     logging.info(f"DEBUG PHOTO: Есть фото: {bool(message.photo)}")
     logging.info(f"DEBUG PHOTO: Caption raw: '{message.caption}'")
@@ -154,7 +192,7 @@ async def vote_handler(callback: types.CallbackQuery):
 
         async with db.execute(
             """
-            SELECT user_id, username, votes
+            SELECT user_id, username, votes, closed
             FROM cleanings
             WHERE id = ?
             """,
@@ -171,12 +209,20 @@ async def vote_handler(callback: types.CallbackQuery):
             return
 
 
-        author_id, author_name, votes_json = row
+        author_id, author_name, votes_json, closed = row
+
+
+        if closed:
+            await callback.answer(
+                "Уборка уже закрыта, голосовать нельзя 🚫",
+                show_alert=True
+            )
+            return
 
 
         if callback.from_user.id == author_id:
             await callback.answer(
-                "Нельзя голосовать за свою уборку 🙅",
+                "Не ахуевай, нельзя голосовать за свою уборку 🙅",
                 show_alert=True
             )
             return
